@@ -1,6 +1,6 @@
 
 import sys
-from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QLabel, QVBoxLayout, QTableWidget, QHeaderView, QWidget, QTableWidgetItem, QSpinBox, QHBoxLayout, QPushButton, QErrorMessage
+from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QLabel, QVBoxLayout, QTableWidget, QHeaderView, QWidget, QTableWidgetItem, QSpinBox, QHBoxLayout, QPushButton, QErrorMessage, QMessageBox
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox
 from ortools.linear_solver import pywraplp
@@ -247,6 +247,8 @@ class AppWindow(QMainWindow):
 A soma dos pesos deve ser igual a 1, mas é {weights_sum:.3f}''')
         # Atividades não realizadas ainda
         not_done = [row for row in self.table.rows if not row._done]
+        # Atividades já realizadas
+        done = [row for row in self.table.rows if row._done]
         # Variáveis de decisão: esforço para cada uma das atividades não realizadas
         efforts = [solver.NumVar(0.0, solver.infinity(), row.name)
                    for row in not_done]
@@ -255,15 +257,27 @@ A soma dos pesos deve ser igual a 1, mas é {weights_sum:.3f}''')
         # Para cada esforço, a nota obtida é o esforço vezes a nota por hora
         # de forma que essa nota resultante não pode ser superior a 10.
         for row, effort in zip(not_done, efforts):
-            solver.Add(effort * row.effort <= 10.0)
+            solver.Add(effort / row.effort <= 10.0)
         # Função objetivo, maximizar a média ponderada das notas
-        solver.Maximize(solver.Sum(row.weight * row.effort *
-                        effort for row, effort in zip(not_done, efforts)))
+        solver.Maximize(
+            # Soma dos pesos das atividades não realizadas vezes a nota obtida
+            solver.Sum(row.weight * (effort / row.effort) for row, effort in zip(not_done, efforts)) +
+            # Soma dos pesos das atividades já realizadas vezes a nota obtida
+            solver.Sum(row.weight * row.grade for row in done)
+        )
         # Resolve o problema
         status = solver.Solve()
         if status == pywraplp.Solver.OPTIMAL:
-            print("Solution:")
-            print(f"Objective value = {solver.Objective().Value():0.1f}")
+            text = '''
+<h1>Esforços calculados</h1>
+<h2>Para maximizar sua média, você deve dedicar:</h2>
+'''
+            for row, effort in zip(not_done, efforts):
+                text += f'<p>{effort.solution_value():.2f} horas para {row.name}</p>'
+            text += f'''
+<h2>Isso te dará uma média de {solver.Objective().Value():.2f}</h2>
+Confia no pai!'''
+            QMessageBox.information(self, "Resultado", text)
         else:
             print("The problem does not have an optimal solution.")
 
