@@ -1,10 +1,12 @@
 
 import sys
 from PySide6.QtWidgets import QApplication, QMainWindow, QDialog, QLabel, QVBoxLayout, QTableWidget, QHeaderView, QWidget, QTableWidgetItem, QSpinBox, QHBoxLayout, QPushButton, QErrorMessage, QMessageBox
+from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox
 from ortools.linear_solver import pywraplp
 
+# Informação da aba "sobre"
 ABOUT_TEXT = '''
 <h1>
     Programação Linear
@@ -17,16 +19,25 @@ ABOUT_TEXT = '''
 Calcula a melhor média possível dados:
 <ul>
     <li>Peso de cada atividade</li>
-    <li>Nota obtida a cada hora de estudo semanal</li>
+    <li>Esforço necessário para aumentar<br/>uma unidade da nota</li>
     <li>Tempo de estudo semanal disponível</li>
 </ul>
 
 <p>
     Desenvolvido por: Guilherme Cesar Tomiasi
 </p>'''
+"Informação a ser apresentada na aba \"Sobre\""
+
+DEBUG_BUTTON = False
+"Se True, disponibiliza um botão para listar no terminal todas as linhas da tabela."
 
 
 class CheckboxWidget(QWidget):
+    """
+        Widget com um checkbox centralizado. Utilizado para compor a última
+        coluna da tabela.
+    """
+
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.checkbox = QCheckBox(self)
@@ -47,6 +58,11 @@ class CheckboxWidget(QWidget):
 
 
 class ActivityTableRow:
+    """
+        Um item da tabela. Automaticamente lida com atualização de estado, fazendo
+        o link do "model" (regra de negócio) e da "view" (informação apresentada)
+    """
+
     def __init__(self, name: str, weight: float, effort: float, done: bool, grade: float = None):
         self.name = name
         self.weight = weight
@@ -71,7 +87,7 @@ class ActivityTableRow:
         self.effortItem.setFlags(self.effortItem.flags() | Qt.ItemIsEditable)
         self.gradeItem = QTableWidgetItem(
             str(self.grade if self._done else ''))
-        # when gradeItem is changed, update grade
+        # Quando a nota é alterada, chama a função que atualiza o estado.
         self.table.itemChanged.connect(self.updateState)
 
         if self._done:
@@ -94,35 +110,35 @@ class ActivityTableRow:
     def updateState(self):
         # Bloqueando signals para evitar recursão infinita
         self.table.blockSignals(True)
-        # Atualiza nome da atividade
+        # Atualizando NOME a partir da view
         self.name = self.nameItem.text()
-        # Atualiza valor de se a atividade foi realizada
+        # Atualiza se a atividade foi realizada a partir da view
         self._done = self.checkboxWidget.isChecked()
-
+        # Atualizando PESO a partir da view
         weight_from_str = self.weightItem.text() if self.weightItem.text() != '' else '0.0'
         try:
             self.weight = float(weight_from_str)
             if self.weight < 0.0 or self.weight > 1.0:
                 raise ValueError()
         except ValueError:
-            # Generate error box
-            QErrorMessage(self.table).showMessage(f'''
-Peso inválido: "{weight_from_str}", deve ser um número real entre 0 e 1''')
+            # Gera caixa mostrando erro na inserção do peso
+            QErrorMessage(self.table).showMessage(
+                f'Peso inválido: "{weight_from_str}", deve ser um número real entre 0 e 1')
             self.weight = 0.0
         self.weightItem.setText(str(self.weight))
-
+        # Atualizando ESFORÇO a partir da view
         effort_from_str = self.effortItem.text() if self.effortItem.text() != '' else '0.0'
         try:
             self.effort = float(effort_from_str)
             if self.effort < 0.0:
                 raise ValueError()
         except ValueError:
-            # Generate error box
-            QErrorMessage(self.table).showMessage(f'''
-Esforço inválido: "{effort_from_str}", deve ser um número real maior que 0''')
+            # Gera caixa mostrando erro na inserção do esforço
+            QErrorMessage(self.table).showMessage(
+                f'Esforço inválido: "{effort_from_str}", deve ser um número real maior que 0')
             self.effort = 0.0
         self.effortItem.setText(str(self.effort))
-
+        # Atualizando NOTA a partir da view
         if self._done:
             grade_from_str = self.gradeItem.text() if self.gradeItem.text() != '' else '0.0'
             try:
@@ -130,21 +146,29 @@ Esforço inválido: "{effort_from_str}", deve ser um número real maior que 0'''
                 if self.grade < 0.0 or self.grade > 10.0:
                     raise ValueError()
             except ValueError:
-                # Generate error box
-                QErrorMessage(self.table).showMessage(f'''
-Nota inválida: "{grade_from_str}", deve ser um número real entre 0 e 10''')
+                # Gera caixa mostrando erro na inserção da nota
+                QErrorMessage(self.table).showMessage(
+                    f'Nota inválida: "{grade_from_str}", deve ser um número real entre 0 e 10')
                 self.grade = 0.0
             self.gradeItem.setText(str(self.grade))
             self.gradeItem.setFlags(self.gradeItem.flags() | Qt.ItemIsEditable)
         else:
+            # Caso atividade não tenha sido feito, apaga a nota e torna não editável
             self.gradeItem.setText('')
             self.gradeItem.setFlags(
                 self.gradeItem.flags() & ~Qt.ItemIsEditable)
             self.grade = None
+        # Ao fim, desbloqueia signals para atualizar estado futuramente
         self.table.blockSignals(False)
 
 
 class ActivitiesTable(QTableWidget):
+    """
+        Tabela contendo todas as atividades. Contém um campo `rows` responsável
+        por guardar o model de cada linha, além de implementar as funções que mantém
+        esse model consistente com a view.
+    """
+
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self.setColumnCount(5)
@@ -153,16 +177,21 @@ class ActivitiesTable(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.rows = []
-        self.rows.append(ActivityTableRow("Prova 1", 0.4, 2., True, 8.0))
-        self.rows.append(ActivityTableRow("Trabalho 1", 0.1, 1., True, 10.0))
-        self.rows.append(ActivityTableRow("Prova 2", 0.4, 3., False))
-        self.rows.append(ActivityTableRow("Trabalho 2", 0.1, 1., False))
+        self.setRowCount(0)
+
+    def fromPattern(self, rowList: list[ActivityTableRow]):
+        """
+            Preenche a tabela a partir de um determinado padrão de atividades.
+        """
+        self.rows = []
+        for row in rowList:
+            self.rows.append(row)
         self.setRowCount(len(self.rows))
         for i, item in enumerate(self.rows):
             item.bindToTable(self, i)
 
     def insertRow(self):
-        self.rows.append(ActivityTableRow("Nova atividade", 0.1, 1, False))
+        self.rows.append(ActivityTableRow("Nova atividade", 0.1, 1., False))
         super().insertRow(len(self.rows)-1)
         self.rows[-1].bindToTable(self, len(self.rows)-1)
 
@@ -178,6 +207,11 @@ class ActivitiesTable(QTableWidget):
 
 
 class AppWindow(QMainWindow):
+    """
+        Classe da aplicação em si. Contém a tabela, botões para manipulá-la e os
+        botões de menu.
+    """
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Otimização de média")
@@ -187,6 +221,23 @@ class AppWindow(QMainWindow):
         self.addTableToLayout()
         self.addSpinBoxToLayout()
         self.addButtonsToLayout()
+        action_duas_provas = QAction('2 Provas 2 Trabalhos', self)
+        action_duas_provas.triggered.connect(lambda: self.table.fromPattern([
+            ActivityTableRow('Prova 1', 0.4, 2.0, False),
+            ActivityTableRow('Trabalho 1', 0.1, 1.0, False),
+            ActivityTableRow('Prova 2', 0.4, 3.0, False),
+            ActivityTableRow('Trabalho 2', 0.1, 1.0, False)
+        ]))
+        self.patternsMenu.addAction(action_duas_provas)
+        action_almir = QAction('Almir', self)
+        action_almir.triggered.connect(lambda: self.table.fromPattern([
+            ActivityTableRow('Prova 1', 0.2, 3.0, False),
+            ActivityTableRow('Trabalho 1', 0.1, 1.0, False),
+            ActivityTableRow('Prova 2', 0.2, 3.5, False),
+            ActivityTableRow('Trabalho 2', 0.1, 1.0, False),
+            ActivityTableRow('Prova 3', 0.4, 5.0, False)
+        ]))
+        self.patternsMenu.addAction(action_almir)
 
     def initLayout(self):
         self.centralWidget = QWidget()
@@ -203,7 +254,7 @@ class AppWindow(QMainWindow):
         self.spinBox.setRange(0, 168)
         self.spinBox.setSingleStep(1)
         self.spinBox.setValue(10)
-        self.spinBox.setSuffix(" horas semanais")
+        self.spinBox.setSuffix(" horas de estudo semanais")
         self.spinBox.setWrapping(True)
         self.spinBox.setAlignment(Qt.AlignCenter)
         self.spinBoxAndButtonLayout = QHBoxLayout()
@@ -215,18 +266,21 @@ class AppWindow(QMainWindow):
         self.addRowButton.clicked.connect(self.table.insertRow)
         self.removeRowButton = QPushButton("Remover")
         self.removeRowButton.clicked.connect(self.table.removeSelectedRows)
-        self.debugButton = QPushButton("Debug")
-        self.debugButton.clicked.connect(
-            lambda: [print(row) for row in self.table.rows])
+        if DEBUG_BUTTON:
+            self.debugButton = QPushButton("Debug")
+            self.debugButton.clicked.connect(
+                lambda: [print(row) for row in self.table.rows])
         self.calculateButton = QPushButton("Calcular")
         self.calculateButton.clicked.connect(self.calculate)
         self.spinBoxAndButtonLayout.addWidget(self.addRowButton)
         self.spinBoxAndButtonLayout.addWidget(self.removeRowButton)
-        self.spinBoxAndButtonLayout.addWidget(self.debugButton)
+        if DEBUG_BUTTON:
+            self.spinBoxAndButtonLayout.addWidget(self.debugButton)
         self.spinBoxAndButtonLayout.addWidget(self.calculateButton)
 
     def initMenuBar(self):
         self.menuBar = self.menuBar()
+        self.patternsMenu = self.menuBar.addMenu("Padrões")
         self.aboutMenu = self.menuBar.addMenu("Sobre")
         self.aboutMenu.addAction("Sobre o programa")
         # texto pop-up quando clicando em "Sobre o programa"
@@ -243,8 +297,8 @@ class AppWindow(QMainWindow):
         weights_sum = sum(row.weight for row in self.table.rows)
         if abs(weights_sum - 1.0) > 1e-3:
             QErrorMessage(self).showMessage(
-                f'''
-A soma dos pesos deve ser igual a 1, mas é {weights_sum:.3f}''')
+                f'A soma dos pesos deve ser igual a 1, mas é {weights_sum:.3f}')
+            return
         # Atividades não realizadas ainda
         not_done = [row for row in self.table.rows if not row._done]
         # Atividades já realizadas
@@ -279,7 +333,8 @@ A soma dos pesos deve ser igual a 1, mas é {weights_sum:.3f}''')
 Confia no pai!'''
             QMessageBox.information(self, "Resultado", text)
         else:
-            print("The problem does not have an optimal solution.")
+            QMessageBox.information(
+                self, "Problema mal-formulado", "O problema apresentado não possui solução ótima.")
 
     def about(self):
         if (hasattr(self, "aboutWindow")):
